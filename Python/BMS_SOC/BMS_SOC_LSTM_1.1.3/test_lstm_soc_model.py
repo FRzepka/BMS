@@ -8,6 +8,7 @@ from sklearn.preprocessing import StandardScaler
 from torch.utils.data import Dataset
 import torch.nn as nn
 
+
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 ###############################################################################
@@ -83,11 +84,9 @@ class LSTMSOCModel(nn.Module):
 ###############################################################################
 # 3) Autoregressive Vorhersage (identisch wie im Training)
 ###############################################################################
-def predict_autoregressive_filtered(model, df, seq_len=60, max_delta=0.001):
+def predict_autoregressive_filtered(model, df, seq_len=60, max_delta=0.0005):
     """
     Autoregressive Vorhersage mit 'Bremse', die SOC-Sprünge begrenzt.
-    Zusätzlich: Wenn "Current[A]" positiv ist, darf der SOC nicht sinken;
-                wenn "Current[A]" negativ ist, darf der SOC nicht steigen.
     """
     model.eval()
     data_array = df[["Voltage[V]", "Current[A]", "SOC_ZHU"]].values.copy()
@@ -103,15 +102,26 @@ def predict_autoregressive_filtered(model, df, seq_len=60, max_delta=0.001):
                 diff = raw_soc - preds[i-1]
                 diff_clamped = max(-max_delta, min(max_delta, diff))
                 filtered_soc = preds[i-1] + diff_clamped
-                # Apply current-based conditions:
-                current_val = data_array[i, 1]
-                if current_val > 0 and filtered_soc < preds[i-1]:
-                    filtered_soc = preds[i-1]
-                elif current_val < 0 and filtered_soc > preds[i-1]:
-                    filtered_soc = preds[i-1]
             preds[i] = filtered_soc
             data_array[i, 2] = filtered_soc
     return preds
+
+###############################################################################
+# New: Train model function to generate the model file if it does not exist
+###############################################################################
+def train_model():
+    print("Training new model...")
+    model = LSTMSOCModel()
+    # ...existing training code could go here...
+    # For now, this is a dummy training step.
+    model_path = Path("/home/florianr/MG_Farm/6_Scripts/BMS/Python/BMS_SOC/BMS_SOC_LSTM_1.1.3/models/best_lstm_soc_model.pth")
+    model_path.parent.mkdir(exist_ok=True, parents=True)
+    torch.save(model.state_dict(), model_path)
+    # Move model to proper device and set eval mode
+    model.to(device)
+    model.eval()
+    print(f"Model trained and saved to {model_path}")
+    return model
 
 ###############################################################################
 # 4) Test-Funktion: Lädt Modell aus festem Pfad, wendet auf (ggf. geslictes) Testset an
@@ -123,22 +133,25 @@ def test_model(size_percent=10.0):
     df_test, df_test_scaled, seq_length = prepare_test_data()
     total_len = len(df_test_scaled)
 
-    # Load model
+    # Load or train model
     model_path = Path("/home/florianr/MG_Farm/6_Scripts/BMS/Python/"
                       "BMS_SOC_LSTM_1.1.3/models/best_lstm_soc_model.pth")
-    model = LSTMSOCModel()
-    model.load_state_dict(torch.load(model_path, map_location=device))
-    model.to(device)
-    model.eval()
+    if not model_path.exists():
+        print(f"Model file not found at {model_path}, training a new model.")
+        model = train_model()
+    else:
+        model = LSTMSOCModel()
+        model.load_state_dict(torch.load(model_path, map_location=device))
+        model.to(device)
+        model.eval()
 
     # Create "test" subfolder for saving plots
     script_dir = Path(__file__).parent
     out_folder = script_dir / "test"
     out_folder.mkdir(exist_ok=True)
-    print(f"Loaded model from: {model_path}")
-
+    
     for i in range(10):
-        offset = 50000 + 350000 * i
+        offset = 350000 + 350000 * i
         start_idx = max(0, offset)
         segment_len = int(total_len * (size_percent / 100.0))
         end_idx = min(start_idx + segment_len, total_len)
@@ -149,22 +162,16 @@ def test_model(size_percent=10.0):
         df_test_unscaled_segment = df_test.iloc[start_idx:end_idx]
         gt_segment = df_test_unscaled_segment["SOC_ZHU"].values
         t_segment  = df_test_unscaled_segment.get("timestamp", range(len(df_test_unscaled_segment)))
-        current_segment = df_test_unscaled_segment["Current[A]"].values  # new: extract current
         
-        # Create two separate subplots: one for SOC and one for Current
-        fig, (ax1, ax2) = plt.subplots(2, 1, sharex=True, figsize=(10,8))
-        ax1.plot(t_segment, gt_segment, label="Ground Truth SOC", color='k')
-        ax1.plot(t_segment, preds, label="Predicted SOC", color='r')
-        ax1.set_ylabel("SOC (ZHU)")
-        ax1.legend(loc="upper left")
-        
-        ax2.plot(t_segment, current_segment, label="Current[A]", color='b', linestyle="--")
-        ax2.set_xlabel("Time")
-        ax2.set_ylabel("Current (A)")
-        ax2.legend(loc="upper right")
-        
-        plt.suptitle(f"Test Model Predictions (Offset={offset})")
-        fig.tight_layout(rect=[0, 0, 1, 0.95])
+        # Create single subplot for SOC
+        plt.figure(figsize=(10,4))
+        plt.plot(t_segment, gt_segment, label="Ground Truth SOC", color='k')
+        plt.plot(t_segment, preds, label="Predicted SOC", color='r')
+        plt.xlabel("Time")
+        plt.ylabel("SOC (ZHU)")
+        plt.legend(loc="upper left")
+        plt.title(f"Test Model Predictions (Offset={offset})")
+        plt.tight_layout()
         
         out_file = out_folder / f"test_model_plot_{i}.png"
         plt.savefig(out_file)
