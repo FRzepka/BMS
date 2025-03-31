@@ -11,6 +11,7 @@ from sklearn.preprocessing import StandardScaler
 import optuna
 from tqdm import tqdm  # Für Fortschrittsbalken
 import shutil
+import math  # Added for RMSE calculation
 
 torch.cuda.empty_cache()
 
@@ -197,6 +198,10 @@ class TCN(nn.Module):
 ###############################################################################
 # 5) Optuna Objective-Funktion für das Hyperparametertuning mit tqdm
 ###############################################################################
+
+# Global holder for the best model state
+best_model_state_holder = {"val_loss": float('inf'), "state": None, "params": None}
+
 def objective(trial: optuna.Trial):
     # Hyperparameter
     seq_length = trial.suggest_int("seq_length", 60, 900, step=30)  # in Sekunden
@@ -268,14 +273,34 @@ def objective(trial: optuna.Trial):
             print(f"[TRIAL {trial.number}] Pruned at epoch {epoch}")
             raise optuna.exceptions.TrialPruned()
 
-    if best_model_state is not None:
-        model_file = hpt_folder / f"model_trial_{trial.number}.pth"
-        torch.save(best_model_state, model_file)
-        trial.set_user_attr("model_path", str(model_file))
-        print(f"[TRIAL {trial.number}] Bestes Modell gespeichert unter: {model_file}")
+    # Update global best model state if this trial is better
+    global best_model_state_holder
+    if best_trial_val < best_model_state_holder["val_loss"]:
+        best_model_state_holder["val_loss"] = best_trial_val
+        best_model_state_holder["state"] = best_model_state
+        best_model_state_holder["params"] = trial.params
 
-    torch.cuda.empty_cache()
-    print(f"[TRIAL {trial.number}] Abgeschlossen mit val_loss: {best_trial_val:.6f}")
+    # Speichere fortlaufend die bisher gesammelten Trials und das beste Modell
+    study = trial.study
+    records = []
+    for t in study.trials:
+        rmse = math.sqrt(t.value) if t.value is not None else None
+        record = {
+            "trial_number": t.number,
+            "value": t.value,
+            "rmse": rmse,
+            "state": t.state.name,
+        }
+        record.update(t.params)
+        records.append(record)
+    csv_file = hpt_folder / "hpt_trials.csv"
+    df_trials = pd.DataFrame(records)
+    df_trials.to_csv(csv_file, index=False)
+
+    if best_model_state_holder["state"] is not None:
+        final_model_path = hpt_folder / "best_tcn_soc_model.pth"
+        torch.save(best_model_state_holder["state"], final_model_path)
+
     return best_trial_val
 
 ###############################################################################
@@ -293,27 +318,27 @@ if __name__ == '__main__':
         print(f"    {key}: {value}")
 
     # Speichere den Modell-State des besten Trials als best_tcn_soc_model.pth
-    best_model_path = best_trial.user_attrs.get("model_path", None)
-    if best_model_path is not None:
+    if best_model_state_holder["state"] is not None:
         final_model_path = hpt_folder / "best_tcn_soc_model.pth"
-        shutil.copy(best_model_path, final_model_path)
-        print(f"[INFO] Bestes Modell wurde gespeichert unter: {final_model_path}")
+        torch.save(best_model_state_holder["state"], final_model_path)
+        print(f"[INFO] Best model saved at: {final_model_path}")
     else:
-        print("[WARN] Kein Modellpfad im besten Trial gefunden!")
+        print("[WARN] No best model found!")
 
-    # Speichere alle Trial-Informationen in einer Excel-Datei
+    # Save trial information to a CSV file
     records = []
     for trial in study.trials:
+        rmse = math.sqrt(trial.value) if trial.value is not None else None
         record = {
             "trial_number": trial.number,
             "value": trial.value,
+            "rmse": rmse,
             "state": trial.state.name,
         }
         record.update(trial.params)
-        record["model_path"] = trial.user_attrs.get("model_path", "")
         records.append(record)
 
     df_trials = pd.DataFrame(records)
-    excel_file = hpt_folder / "hpt_trials.xlsx"
-    df_trials.to_excel(excel_file, index=False)
-    print(f"[INFO] Alle Trial-Informationen wurden in '{excel_file}' gespeichert.")
+    csv_file = hpt_folder / "hpt_trials.csv"
+    df_trials.to_csv(csv_file, index=False)
+    print(f"[INFO] All trial information saved to '{csv_file}'.")
