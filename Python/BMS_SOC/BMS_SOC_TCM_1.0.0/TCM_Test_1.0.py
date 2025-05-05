@@ -1,23 +1,34 @@
 import os
 import sys
+import math
 from pathlib import Path
 import pandas as pd
-import matplotlib.pyplot as plt
 import numpy as np
+import matplotlib.pyplot as plt
 import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 from sklearn.preprocessing import StandardScaler
-import optuna
-from tqdm import tqdm  # Für Fortschrittsbalken
-import shutil
-import math  # Added for RMSE calculation
-
-torch.cuda.empty_cache()
 
 # Ordner für Hyperparametertuning-Ergebnisse (HPT)
 hpt_folder = Path(__file__).parent / "HPT" if '__file__' in globals() else Path("HPT")
 os.makedirs(hpt_folder, exist_ok=True)
+
+# Lade die CSV mit den Hyperparametern
+csv_file = hpt_folder / "hpt_trials.csv"
+df_hparams = pd.read_csv(csv_file)
+best_idx = df_hparams["value"].idxmin()
+best_row = df_hparams.loc[best_idx]
+
+seq_length = int(best_row["seq_length"])
+kernel_size = int(best_row["kernel_size"])
+dropout = float(best_row["dropout"])
+n_ch1 = int(best_row["n_ch1"])
+n_ch2 = int(best_row["n_ch2"])
+
+print(f"[INFO] Using best hyperparams from hpt_trials.csv:\n"
+      f"seq_length={seq_length}, kernel_size={kernel_size}, dropout={dropout}, "
+      f"n_ch1={n_ch1}, n_ch2={n_ch2}")
 
 ###############################################################################
 # 1) Laden der Daten, Reduktion auf 25%, zeitbasierter Split in [Train, Val, Test]
@@ -195,156 +206,80 @@ class TCN(nn.Module):
         out = self.fc(last_out)
         return out.squeeze(-1)
 
-###############################################################################
-# 5) Optuna Objective-Funktion für das Hyperparametertuning mit tqdm
-###############################################################################
+# Load best model file from HPT folder
+best_model_path = hpt_folder / "best_tcn_soc_model.pth"
 
-# Global holder for the best model state
-best_model_state_holder = {"val_loss": float('inf'), "state": None, "params": None}
+# Define the device
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-def objective(trial: optuna.Trial):
-    # Hyperparameter
-    seq_length = trial.suggest_int("seq_length", 3600, 7200, step=600)  # in Sekunden
-    lr = trial.suggest_float("lr", 1e-4, 1e-2, log=True)
-    kernel_size = trial.suggest_int("kernel_size", 2, 5)
-    dropout = trial.suggest_float("dropout", 0.0, 0.5)
-    n_ch1 = trial.suggest_int("n_ch1", 16, 128, step=16)
-    n_ch2 = trial.suggest_int("n_ch2", 16, 128, step=16)
-    weight_decay = trial.suggest_float("weight_decay", 1e-6, 1e-3, log=True)
-    n_ch3 = trial.suggest_int("n_ch3", 16, 128, step=16)
-    num_channels = [n_ch1, n_ch2, n_ch3]
-    batch_size = trial.suggest_int("batch_size", 32, 512, step=32)
+# Instantiate the TCN model using the same hyperparameters we read from hpt_trials.csv.
+model = TCN(
+    input_size=2,
+    num_channels=[n_ch1, n_ch2],
+    kernel_size=kernel_size,
+    dropout=dropout
+)
+# Load the trained weights from best_model_path.
+model.load_state_dict(torch.load(best_model_path, map_location=device))
+# Move the model to the chosen device and set model.eval().
+model.to(device)
+model.eval()
 
-    print(f"\n[TRIAL {trial.number}] Beginne mit: seq_length={seq_length}, lr={lr:.5f}, "
-          f"kernel_size={kernel_size}, dropout={dropout:.2f}, num_channels={num_channels}, "
-          f"batch_size={batch_size}")
+# Remove single subset usage and loop over 5 slices
+n_slices = 5
+slice_indices = np.linspace(0, len(df_test), n_slices + 1, dtype=int)
 
-    # Erstelle Datasets
-    train_dataset = SequenceDataset(df_train_scaled, seq_len=seq_length)
-    val_dataset   = SequenceDataset(df_val_scaled, seq_len=seq_length)
+all_preds_list = []
+all_targets_list = []
+all_time_list = []
+error_list = []
 
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, drop_last=True)
-    val_loader   = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, drop_last=True)
+for i in range(n_slices):
+    start_i = slice_indices[i]
+    end_i = slice_indices[i + 1]
+    df_test_slice = df_test.iloc[start_i:end_i].copy()
+    df_test_slice_scaled = df_test_slice.copy()
+    df_test_slice_scaled[features_to_scale] = scaler.transform(df_test_slice_scaled[features_to_scale])
 
-    # Modell instanziieren
-    model = TCN(input_size=2, num_channels=num_channels, kernel_size=kernel_size, dropout=dropout)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model.to(device)
+    slice_dataset = SequenceDataset(df_test_slice_scaled, seq_len=seq_length)
+    slice_loader = DataLoader(slice_dataset, batch_size=2000, shuffle=False, drop_last=True)
+    
+    preds_slice = []
+    targets_slice = []
+    with torch.no_grad():
+        for x_test, y_test in slice_loader:
+            x_test, y_test = x_test.to(device), y_test.to(device)
+            y_pred_test = model(x_test)
+            preds_slice.append(y_pred_test.cpu().numpy())
+            targets_slice.append(y_test.cpu().numpy())
+    preds_slice = np.concatenate(preds_slice)
+    targets_slice = np.concatenate(targets_slice)
+    time_slice = df_test_slice['timestamp'].values[seq_length : seq_length + len(targets_slice)]
+    # neu: Berechnung des prozentualen Fehlers
+    slice_error_percent = np.mean(np.abs(preds_slice - targets_slice)) * 100
+    print(f"[INFO] Slice {i+1} Error: {slice_error_percent:.2f}%")
+    error_list.append(slice_error_percent)
 
-    criterion = nn.MSELoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
+    all_preds_list.append(preds_slice)
+    all_targets_list.append(targets_slice)
+    all_time_list.append(time_slice)
 
-    # Optional: Lernraten-Scheduler
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode='min', factor=0.1, patience=3, verbose=True
-    )
+# Create subplots
+fig, axes = plt.subplots(n_slices, 1, figsize=(12, 10))
+for i, ax in enumerate(axes):
+    ax.plot(all_time_list[i], all_targets_list[i], label="SOC (GT)", linestyle='-')
+    ax.plot(all_time_list[i], all_preds_list[i], label="SOC (Pred)", linestyle='--')
+    ax.set_title(f"Slice {i+1} | MAE: {error_list[i]:.2f}%")
+    ax.set_xlabel("Time")
+    ax.set_ylabel("SOC (ZHU)")
+    ax.legend()
+plt.tight_layout()
 
-    n_epochs = 10
-    best_trial_val = float('inf')
-    best_model_state = None
+script_dir = Path(__file__).parent if '__file__' in globals() else Path.cwd()
+test_dir = script_dir / "test"
+test_dir.mkdir(exist_ok=True)
+plot_file = test_dir / "predictions_test_slices.png"
 
-    epoch_pbar = tqdm(range(n_epochs), desc=f"Trial {trial.number} Epochs", leave=False)
-    for epoch in epoch_pbar:
-        model.train()
-        train_loss = 0.0
-        # Trainingsschleife mit Fortschrittsbalken
-        for x_batch, y_batch in tqdm(train_loader, desc="Train Batches", leave=False):
-            x_batch, y_batch = x_batch.to(device), y_batch.to(device)
-            optimizer.zero_grad()
-            y_pred = model(x_batch)
-            loss = criterion(y_pred, y_batch)
-            loss.backward()
-            optimizer.step()
-            train_loss += loss.item() * x_batch.size(0)
-        train_loss /= len(train_loader.dataset)
-
-        model.eval()
-        val_loss = 0.0
-        with torch.no_grad():
-            for x_val, y_val in tqdm(val_loader, desc="Val Batches", leave=False):
-                x_val, y_val = x_val.to(device), y_val.to(device)
-                y_pred_val = model(x_val)
-                loss_val = criterion(y_pred_val, y_val)
-                val_loss += loss_val.item() * x_val.size(0)
-        val_loss /= len(val_loader.dataset)
-
-        epoch_pbar.set_postfix({"train_loss": f"{train_loss:.6f}", "val_loss": f"{val_loss:.6f}"})
-
-        # Speichere bestes Modell im Trial
-        if val_loss < best_trial_val:
-            best_trial_val = val_loss
-            best_model_state = model.state_dict()
-
-        trial.report(val_loss, epoch)
-        if trial.should_prune():
-            print(f"[TRIAL {trial.number}] Pruned at epoch {epoch}")
-            raise optuna.exceptions.TrialPruned()
-
-        scheduler.step(val_loss)
-
-    # Update global best model state if this trial is better
-    global best_model_state_holder
-    if best_trial_val < best_model_state_holder["val_loss"]:
-        best_model_state_holder["val_loss"] = best_trial_val
-        best_model_state_holder["state"] = best_model_state
-        best_model_state_holder["params"] = trial.params
-
-    return best_trial_val
-
-###############################################################################
-# 6) Optuna-Studie starten und Ergebnisse speichern
-###############################################################################
-
-def save_csv_after_trial(study, trial):
-    records = []
-    for t in study.trials:
-        rmse = math.sqrt(t.value) if t.value is not None else None
-        record = {
-            "trial_number": t.number,
-            "value": t.value,
-            "rmse": rmse,
-            "state": t.state.name,
-        }
-        record.update(t.params)
-        records.append(record)
-    df_trials = pd.DataFrame(records)
-    csv_file = hpt_folder / "hpt_trials.csv"
-    df_trials.to_csv(csv_file, index=False)
-    print(f"[INFO] CSV updated. {len(study.trials)} trials logged.")
-
-if __name__ == '__main__':
-    print("[INFO] Starte Hyperparametertuning mit Optuna ...")
-    study = optuna.create_study(direction="minimize")
-    study.optimize(objective, n_trials=50, callbacks=[save_csv_after_trial])
-
-    print("\n[INFO] Beste Trial:")
-    best_trial = study.best_trial
-    print(f"  Trial {best_trial.number} | Value: {best_trial.value:.6f}")
-    for key, value in best_trial.params.items():
-        print(f"    {key}: {value}")
-
-    # Speichere den Modell-State des besten Trials als best_tcn_soc_model.pth
-    if best_model_state_holder["state"] is not None:
-        final_model_path = hpt_folder / "best_tcn_soc_model.pth"
-        torch.save(best_model_state_holder["state"], final_model_path)
-        print(f"[INFO] Best model saved at: {final_model_path}")
-    else:
-        print("[WARN] No best model found!")
-
-    # Save trial information to a CSV file
-    records = []
-    for trial in study.trials:
-        rmse = math.sqrt(trial.value) if trial.value is not None else None
-        record = {
-            "trial_number": trial.number,
-            "value": trial.value,
-            "rmse": rmse,
-            "state": trial.state.name,
-        }
-        record.update(trial.params)
-        records.append(record)
-
-    df_trials = pd.DataFrame(records)
-    csv_file = hpt_folder / "hpt_trials.csv"
-    df_trials.to_csv(csv_file, index=False)
-    print(f"[INFO] All trial information saved to '{csv_file}'.")
+plt.savefig(plot_file)
+plt.show()
+print(f"[INFO] Sliced test plot saved to: {plot_file}")

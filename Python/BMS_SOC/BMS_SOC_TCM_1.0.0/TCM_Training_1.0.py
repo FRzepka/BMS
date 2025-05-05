@@ -1,19 +1,15 @@
 import os
 import sys
+import math
 from pathlib import Path
 import pandas as pd
-import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch.nn as nn
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import DataLoader
 from sklearn.preprocessing import StandardScaler
-import optuna
-from tqdm import tqdm  # Für Fortschrittsbalken
-import shutil
-import math  # Added for RMSE calculation
-
-torch.cuda.empty_cache()
+from torch.utils.data import Dataset
+from tqdm import tqdm
 
 # Ordner für Hyperparametertuning-Ergebnisse (HPT)
 hpt_folder = Path(__file__).parent / "HPT" if '__file__' in globals() else Path("HPT")
@@ -196,155 +192,94 @@ class TCN(nn.Module):
         return out.squeeze(-1)
 
 ###############################################################################
-# 5) Optuna Objective-Funktion für das Hyperparametertuning mit tqdm
+# 5) Load best hyperparams from hpt_trials.csv
 ###############################################################################
+csv_file = hpt_folder / "hpt_trials.csv"
+df_hparams = pd.read_csv(csv_file)
+best_idx = df_hparams["value"].idxmin()
+best_row = df_hparams.loc[best_idx]
 
-# Global holder for the best model state
-best_model_state_holder = {"val_loss": float('inf'), "state": None, "params": None}
+seq_length = int(best_row["seq_length"])
+kernel_size = int(best_row["kernel_size"])
+dropout = float(best_row["dropout"])
+n_ch1 = int(best_row["n_ch1"])
+n_ch2 = int(best_row["n_ch2"])
+batch_size = 64  # override or set from best_row if stored
 
-def objective(trial: optuna.Trial):
-    # Hyperparameter
-    seq_length = trial.suggest_int("seq_length", 3600, 7200, step=600)  # in Sekunden
-    lr = trial.suggest_float("lr", 1e-4, 1e-2, log=True)
-    kernel_size = trial.suggest_int("kernel_size", 2, 5)
-    dropout = trial.suggest_float("dropout", 0.0, 0.5)
-    n_ch1 = trial.suggest_int("n_ch1", 16, 128, step=16)
-    n_ch2 = trial.suggest_int("n_ch2", 16, 128, step=16)
-    weight_decay = trial.suggest_float("weight_decay", 1e-6, 1e-3, log=True)
-    n_ch3 = trial.suggest_int("n_ch3", 16, 128, step=16)
-    num_channels = [n_ch1, n_ch2, n_ch3]
-    batch_size = trial.suggest_int("batch_size", 32, 512, step=32)
-
-    print(f"\n[TRIAL {trial.number}] Beginne mit: seq_length={seq_length}, lr={lr:.5f}, "
-          f"kernel_size={kernel_size}, dropout={dropout:.2f}, num_channels={num_channels}, "
-          f"batch_size={batch_size}")
-
-    # Erstelle Datasets
-    train_dataset = SequenceDataset(df_train_scaled, seq_len=seq_length)
-    val_dataset   = SequenceDataset(df_val_scaled, seq_len=seq_length)
-
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, drop_last=True)
-    val_loader   = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, drop_last=True)
-
-    # Modell instanziieren
-    model = TCN(input_size=2, num_channels=num_channels, kernel_size=kernel_size, dropout=dropout)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model.to(device)
-
-    criterion = nn.MSELoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
-
-    # Optional: Lernraten-Scheduler
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode='min', factor=0.1, patience=3, verbose=True
-    )
-
-    n_epochs = 10
-    best_trial_val = float('inf')
-    best_model_state = None
-
-    epoch_pbar = tqdm(range(n_epochs), desc=f"Trial {trial.number} Epochs", leave=False)
-    for epoch in epoch_pbar:
-        model.train()
-        train_loss = 0.0
-        # Trainingsschleife mit Fortschrittsbalken
-        for x_batch, y_batch in tqdm(train_loader, desc="Train Batches", leave=False):
-            x_batch, y_batch = x_batch.to(device), y_batch.to(device)
-            optimizer.zero_grad()
-            y_pred = model(x_batch)
-            loss = criterion(y_pred, y_batch)
-            loss.backward()
-            optimizer.step()
-            train_loss += loss.item() * x_batch.size(0)
-        train_loss /= len(train_loader.dataset)
-
-        model.eval()
-        val_loss = 0.0
-        with torch.no_grad():
-            for x_val, y_val in tqdm(val_loader, desc="Val Batches", leave=False):
-                x_val, y_val = x_val.to(device), y_val.to(device)
-                y_pred_val = model(x_val)
-                loss_val = criterion(y_pred_val, y_val)
-                val_loss += loss_val.item() * x_val.size(0)
-        val_loss /= len(val_loader.dataset)
-
-        epoch_pbar.set_postfix({"train_loss": f"{train_loss:.6f}", "val_loss": f"{val_loss:.6f}"})
-
-        # Speichere bestes Modell im Trial
-        if val_loss < best_trial_val:
-            best_trial_val = val_loss
-            best_model_state = model.state_dict()
-
-        trial.report(val_loss, epoch)
-        if trial.should_prune():
-            print(f"[TRIAL {trial.number}] Pruned at epoch {epoch}")
-            raise optuna.exceptions.TrialPruned()
-
-        scheduler.step(val_loss)
-
-    # Update global best model state if this trial is better
-    global best_model_state_holder
-    if best_trial_val < best_model_state_holder["val_loss"]:
-        best_model_state_holder["val_loss"] = best_trial_val
-        best_model_state_holder["state"] = best_model_state
-        best_model_state_holder["params"] = trial.params
-
-    return best_trial_val
+print(f"[INFO] Using best hyperparams for full training:\n"
+      f"seq_length={seq_length}, kernel_size={kernel_size}, dropout={dropout}, "
+      f"n_ch1={n_ch1}, n_ch2={n_ch2}, batch_size={batch_size}")
 
 ###############################################################################
-# 6) Optuna-Studie starten und Ergebnisse speichern
+# 6) Create train/val sets, possibly with more epochs
 ###############################################################################
+train_dataset = SequenceDataset(df_train_scaled, seq_len=seq_length)
+val_dataset   = SequenceDataset(df_val_scaled,   seq_len=seq_length)
 
-def save_csv_after_trial(study, trial):
-    records = []
-    for t in study.trials:
-        rmse = math.sqrt(t.value) if t.value is not None else None
-        record = {
-            "trial_number": t.number,
-            "value": t.value,
-            "rmse": rmse,
-            "state": t.state.name,
-        }
-        record.update(t.params)
-        records.append(record)
-    df_trials = pd.DataFrame(records)
-    csv_file = hpt_folder / "hpt_trials.csv"
-    df_trials.to_csv(csv_file, index=False)
-    print(f"[INFO] CSV updated. {len(study.trials)} trials logged.")
+train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, drop_last=True)
+val_loader   = DataLoader(val_dataset,   batch_size=batch_size, shuffle=False, drop_last=True)
 
-if __name__ == '__main__':
-    print("[INFO] Starte Hyperparametertuning mit Optuna ...")
-    study = optuna.create_study(direction="minimize")
-    study.optimize(objective, n_trials=50, callbacks=[save_csv_after_trial])
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+model = TCN(
+    input_size=2,
+    num_channels=[n_ch1, n_ch2],
+    kernel_size=kernel_size,
+    dropout=dropout
+).to(device)
 
-    print("\n[INFO] Beste Trial:")
-    best_trial = study.best_trial
-    print(f"  Trial {best_trial.number} | Value: {best_trial.value:.6f}")
-    for key, value in best_trial.params.items():
-        print(f"    {key}: {value}")
+criterion = nn.MSELoss()
+optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)  # or chosen from best_row
 
-    # Speichere den Modell-State des besten Trials als best_tcn_soc_model.pth
-    if best_model_state_holder["state"] is not None:
-        final_model_path = hpt_folder / "best_tcn_soc_model.pth"
-        torch.save(best_model_state_holder["state"], final_model_path)
-        print(f"[INFO] Best model saved at: {final_model_path}")
+###############################################################################
+# 7) Longer training with more epochs + optional early stopping
+###############################################################################
+n_epochs = 50
+best_val_loss = float('inf')
+early_stop_count = 0
+PATIENCE = 5
+
+for epoch in range(n_epochs):
+    model.train()
+    train_loss_sum = 0.0
+    for x_batch, y_batch in tqdm(train_loader, desc=f"Epoch {epoch+1}/{n_epochs}"):
+        x_batch, y_batch = x_batch.to(device), y_batch.to(device)
+        optimizer.zero_grad()
+        y_pred = model(x_batch)
+        loss = criterion(y_pred, y_batch)
+        loss.backward()
+        optimizer.step()
+        train_loss_sum += loss.item() * x_batch.size(0)
+    train_loss = train_loss_sum / len(train_loader.dataset)
+
+    model.eval()
+    val_loss_sum = 0.0
+    with torch.no_grad():
+        for x_val, y_val in val_loader:
+            x_val, y_val = x_val.to(device), y_val.to(device)
+            y_pred_val = model(x_val)
+            loss_val = criterion(y_pred_val, y_val)
+            val_loss_sum += loss_val.item() * x_val.size(0)
+    val_loss = val_loss_sum / len(val_loader.dataset)
+
+    print(f"[Epoch {epoch+1}/{n_epochs}] train_loss={train_loss:.6f} val_loss={val_loss:.6f}")
+
+    # Early stopping check
+    if val_loss < best_val_loss:
+        best_val_loss = val_loss
+        best_model_state = model.state_dict()
+        early_stop_count = 0
     else:
-        print("[WARN] No best model found!")
+        early_stop_count += 1
+        if early_stop_count >= PATIENCE:
+            print(f"[INFO] Early stopping at epoch {epoch+1}")
+            break
 
-    # Save trial information to a CSV file
-    records = []
-    for trial in study.trials:
-        rmse = math.sqrt(trial.value) if trial.value is not None else None
-        record = {
-            "trial_number": trial.number,
-            "value": trial.value,
-            "rmse": rmse,
-            "state": trial.state.name,
-        }
-        record.update(trial.params)
-        records.append(record)
-
-    df_trials = pd.DataFrame(records)
-    csv_file = hpt_folder / "hpt_trials.csv"
-    df_trials.to_csv(csv_file, index=False)
-    print(f"[INFO] All trial information saved to '{csv_file}'.")
+###############################################################################
+# 8) Save best trained model
+###############################################################################
+model_path = hpt_folder / "best_tcn_trained_model.pth"
+if 'best_model_state' in locals():
+    torch.save(best_model_state, model_path)
+    print(f"[INFO] Best trained model saved at: {model_path}")
+else:
+    print("[WARN] No best model found during training.")
