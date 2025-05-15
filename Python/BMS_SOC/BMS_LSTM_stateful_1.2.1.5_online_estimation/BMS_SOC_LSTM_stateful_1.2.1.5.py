@@ -84,7 +84,8 @@ class WindowedDataset(Dataset):
     def __getitem__(self, idx):
         start = idx * self.seq_len
         x = torch.from_numpy(self.data[start:start + self.seq_len]).float()
-        y = torch.tensor(self.labels[start + self.seq_len], dtype=torch.float32)
+        # return sequence of labels, not just the last one
+        y = torch.from_numpy(self.labels[start:start + self.seq_len]).float()
         return x, y
 
 # Modell: LSTM + Dropout + MLP-Head
@@ -105,10 +106,14 @@ def build_model(input_size=2, hidden_size=32, num_layers=1, dropout=0.2, mlp_hid
             )
 
         def forward(self, x, hidden):
+            # out: (batch, seq_len, hidden_size)
             out, hidden = self.lstm(x, hidden)
-            last = out[:, -1, :]
-            soc = self.mlp(last)
-            return soc.squeeze(-1), hidden
+            batch, seq_len, hid = out.size()
+            # apply MLP to every timestep
+            out_flat = out.contiguous().view(batch * seq_len, hid)
+            soc_flat = self.mlp(out_flat)               # (batch*seq_len, 1)
+            soc = soc_flat.view(batch, seq_len)         # (batch, seq_len)
+            return soc, hidden
     return SOCModel().to(device)
 
 # Training mit Mixed Precision und Batch-Fenstern
