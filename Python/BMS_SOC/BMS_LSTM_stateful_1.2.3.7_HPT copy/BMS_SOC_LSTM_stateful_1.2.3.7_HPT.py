@@ -44,28 +44,26 @@ def load_cell_data(data_dir: Path):
 def load_data(base_path: str = "/home/florianr/MG_Farm/5_Data/MGFarm_18650_Dataframes"):
     base = Path(base_path)
     cells = load_cell_data(base)
-    # Festgelegte Trainings- und Validierungszellen
+    # neue Trainingszellen und feste Validierungszelle
     train_cells = [
-        "MGFarm_18650_C05",
-        "MGFarm_18650_C01",
-        "MGFarm_18650_C21",
-        "MGFarm_18650_C19"
+        f"MGFarm_18650_C{str(i).zfill(2)}"
+        for i in [1,3,5,9,11,13,15,17,19,21,23,25,27]
     ]
     val_cell = "MGFarm_18650_C07"
+    # Feature-Liste
+    feats = ["Voltage[V]", "Current[A]", "SOH_ZHU", "Q_m"]
 
-    feats = ["Voltage[V]", "Current[A]", "SOH_ZHU", "Q_m"]  # include Q_m
-    # Trainingsdaten laden und Timestamp
+    # trainings-Daten initial (nur timestamp ergänzen)
     train_dfs = {}
     for name in train_cells:
         df = cells[name].copy()
         df['timestamp'] = pd.to_datetime(df['Absolute_Time[yyyy-mm-dd hh:mm:ss]'])
         train_dfs[name] = df
 
-    # Skalar fitten (Min-Max zwischen 0 und 1)
-    df_all_train = pd.concat(train_dfs.values(), ignore_index=True)
-    scaler = MaxAbsScaler().fit(df_all_train[feats])
-    # debug: inspect scaler learned max_abs per feature
-    print("[DEBUG] scaler.max_abs_:", dict(zip(feats, scaler.scale_)))
+    # scaler auf *allen* Zellen fitten (nicht nur Training)
+    df_all = pd.concat(cells.values(), ignore_index=True)
+    scaler = MaxAbsScaler().fit(df_all[feats])
+    print("[INFO] Skaler über alle Zellen fitten")
 
     # Skalierte Trainingsdaten
     train_scaled = {}
@@ -185,7 +183,7 @@ def evaluate_seq2seq(model, df, device):
     h, c = h.contiguous(), c.contiguous()
     preds = []
 
-    pbar = tqdm(total=n_chunks, desc="Seq2Seq Val", leave=False)
+    print(">> Seq2Seq-Validation startet")
     with torch.no_grad():
         for i in range(n_chunks):
             s = i * SEQ_CHUNK_SIZE
@@ -198,8 +196,6 @@ def evaluate_seq2seq(model, df, device):
                 out, (h, c) = model(chunk, (h, c))
             h, c = h.contiguous(), c.contiguous()
             preds.extend(out.squeeze(0).cpu().numpy())
-    pbar.close()
-
     preds = np.array(preds)
     gts = labels[: len(preds)]
     return np.mean((preds - gts) ** 2)
@@ -207,16 +203,12 @@ def evaluate_seq2seq(model, df, device):
 def evaluate_online(model, df, device):
     """Stepwise seq‐to‐seq Validation mit tqdm."""
     model.eval()
-    h, c = init_hidden(model, device=device)
-    preds, gts = [], []
+    print(">> Online-Validation startet")
     with torch.no_grad():
-        for idx, (v, i, soh, qm) in enumerate(
-            tqdm(zip(df['Voltage[V]'].values,
-                     df['Current[A]'].values,
-                     df['SOH_ZHU'].values,
-                     df['Q_m'].values),
-                 total=len(df), desc="Validation", leave=False)
-        ):
+        for idx, (v, i, soh, qm) in enumerate(zip(
+            df['Voltage[V]'], df['Current[A]'],
+            df['SOH_ZHU'], df['Q_m']
+        )):
             x = torch.tensor([[v, i, soh, qm]], dtype=torch.float32, device=device).view(1,1,4).contiguous()
             pred, (h, c) = model(x, (h, c))
             preds.append(pred.item())
@@ -247,70 +239,48 @@ def evaluate_onechunk_seq2seq(model, df, device):
     return mse, preds, labels
 
 # Training Funktion mit Batch-Training und Seq2Seq-Validierung
-def train_online(epochs=30, lr=1e-4, online_train=False,
-                 hidden_size=32, dropout=0.2,
-                 patience=5, log_csv_path="training_log.csv"):
+def train_online(
+    epochs=30, lr=1e-4, online_train=False,
+    hidden_size=32, dropout=0.2,
+    patience=5, log_csv_path="training_log.csv",
+    out_dir="trial"
+):
+    # Ordner für diesen Lauf anlegen
+    Path(out_dir).mkdir(parents=True, exist_ok=True)
+    log_csv_path = Path(out_dir) / log_csv_path
+
     train_scaled, df_val, df_test, train_cells, val_cell = load_data()
-    # debug: summary of data splits
-    print(f"[DEBUG] Chunk size: {SEQ_CHUNK_SIZE}")
-    for name, df in train_scaled.items():
-        print(f"[DEBUG] TRAIN {name}: {len(df)} rows")
-    print(f"[DEBUG] VALIDATION ({val_cell}): {len(df_val)} rows")
-    print(f"[DEBUG] TEST       ({val_cell}): {len(df_test)} rows")
-    print("Training auf Zellen:", train_cells)
+    print(f"[INFO] Train cells={train_cells}, Val/Test cell={val_cell}")
 
     # Rohdaten-Plots
     for name, df in train_scaled.items():
         plt.figure(figsize=(10,4))
-        plt.plot(df['timestamp'], df['SOC_ZHU'], label=name)
+        plt.plot(df['timestamp'], df['SOC_ZHU'])
         plt.title(f"Train SOC {name}")
-        plt.tight_layout(); plt.savefig(f"train_{name}_plot.png"); plt.close()
-
-    # Val-Plot
-    plt.figure(figsize=(8,4))
-    plt.plot(df_val['timestamp'], df_val['SOC_ZHU'])
-    plt.title("Val SOC")
-    plt.tight_layout(); plt.savefig("val_data_plot.png"); plt.close()
-
-    # Test-Plot
-    plt.figure(figsize=(8,4))
-    plt.plot(df_test['timestamp'], df_test['SOC_ZHU'])
-    plt.title("Test SOC")
-    plt.tight_layout(); plt.savefig("test_data_plot.png"); plt.close()
+        plt.tight_layout()
+        plt.savefig(Path(out_dir)/f"train_{name}.png")
+        plt.close()
 
     model = build_model(hidden_size=hidden_size, dropout=dropout)
     optim = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-5)
     scheduler = ReduceLROnPlateau(optim, mode='min', patience=3, factor=0.5)
     criterion = nn.MSELoss()
-    scaler = GradScaler(enabled=(device.type == 'cuda'))
-    best_val_loss = float('inf')
-    no_improve = 0
-
-    # --- Logging vorbereiten ---
-    log_fields = ["epoch", "train_rmse", "val_rmse"]
-    log_rows = []
+    scaler = GradScaler(enabled=(device.type=="cuda"))
+    best_val = float('inf'); no_improve=0
+    log_rows=[]
 
     for ep in range(1, epochs+1):
+        print(f"\n--- Epoch {ep}/{epochs} ---")
         model.train()
-        total_loss, total_steps = 0.0, 0
-        print(f"\n=== Epoch {ep}/{epochs} ===")
+        total_loss=0; steps=0
 
         for name, df in train_scaled.items():
+            print(f"[Epoch {ep}] Training Cell {name}")
             if not online_train:
-                # Standard batch training - same as 1.2.3.2
                 ds = CellDataset(df, SEQ_CHUNK_SIZE)
-                print(f"--> {name}, Batches: {len(ds)}")
-                dl = DataLoader(
-                    ds,
-                    batch_size=1,
-                    shuffle=False,
-                    num_workers=4,
-                    pin_memory=True
-                )
+                dl = DataLoader(ds, batch_size=1, shuffle=False, num_workers=4, pin_memory=True)
                 h, c = init_hidden(model, device=device)
-                h, c = h.contiguous(), c.contiguous()  # Ensure contiguous hidden states
-                
-                for x_b, y_b in tqdm(dl, desc=f"{name} Ep{ep}", leave=True):
+                for x_b, y_b in dl:
                     x_b, y_b = x_b.to(device), y_b.to(device)
                     x_b = x_b.contiguous()  # Ensure contiguous input
                     
@@ -330,16 +300,14 @@ def train_online(epochs=30, lr=1e-4, online_train=False,
                     
                     h, c = h.detach(), c.detach()
                     total_loss += loss.item()   
-                    total_steps += 1
+                    steps += 1
             else:
-                # Online training - preserved from 1.2.3.2
-                print(f"--> {name} (Online-Train, {len(df)} steps)")
-                h, c = init_hidden(model, batch_size=1, device=device)
-                h, c = h.contiguous(), c.contiguous()
-                
-                for idx, (v, i, soh, y_true) in enumerate(
-                    tqdm(zip(df['Voltage[V]'].values, df['Current[A]'].values, df['SOH_ZHU'].values, df['Q_m'].values, df['SOC_ZHU'].values),
-                         total=len(df), desc=f"{name} Ep{ep}", leave=True)):
+                print(f"[Epoch {ep}] Online-Training Cell {name}")
+                h, c = init_hidden(model, device=device)
+                for v, i, soh, qm, y_true in zip(
+                    df['Voltage[V]'], df['Current[A]'],
+                    df['SOH_ZHU'], df['Q_m'], df['SOC_ZHU']
+                ):
                     x = torch.tensor([[v, i, soh, qm]], dtype=torch.float32, device=device).view(1,1,4).contiguous()
                     y = torch.tensor([[y_true]], dtype=torch.float32, device=device).contiguous()
                     optim.zero_grad()
@@ -357,109 +325,78 @@ def train_online(epochs=30, lr=1e-4, online_train=False,
                     
                     h, c = h.detach(), c.detach()
                     total_loss += loss.item()                    
-                    total_steps += 1
+                    steps += 1
 
-        avg_mse = total_loss / total_steps
-        train_rmse = math.sqrt(avg_mse)
-        print(f"Epoch {ep} Training abgeschlossen, train RMSE={train_rmse:.6f}")
+        train_rmse = math.sqrt(total_loss/steps)
+        print(f"[Epoch {ep}] train RMSE={train_rmse:.4f}")
 
-        # → Ein-Chunk-Validation
-        val_mse, val_preds, val_gts = evaluate_onechunk_seq2seq(model, df_val, device)
+        # nur MSE berechnen, kein Plot mehr
+        val_mse, _, _ = evaluate_onechunk_seq2seq(model, df_val, device)
         val_rmse = math.sqrt(val_mse)
-        print(f"Epoch {ep} Validierung abgeschlossen, val RMSE={val_rmse:.6f}")
-        plt.figure(figsize=(10,4))
-        plt.plot(df_val['timestamp'], val_gts,  'k-', label="GT")
-        plt.plot(df_val['timestamp'], val_preds,'r-', label="Pred")
-        plt.title(f"Validierung Ep{ep} — RMSE: {val_rmse:.4f}")
-        plt.legend(); plt.tight_layout()
-        plt.savefig(f"val_onechunk_epoch{ep:02d}.png"); plt.close()
+        print(f"[Epoch {ep}] val RMSE={val_rmse:.4f}")
 
         scheduler.step(val_mse)
-        # EarlyStopping
-        if val_mse < best_val_loss:
-            best_val_loss, no_improve = val_mse, 0
-            torch.save(model.state_dict(), "best_seq2seq_soc.pth")
+        if val_mse < best_val:
+            best_val = val_mse; no_improve=0
+            torch.save(model.state_dict(), Path(out_dir)/"best_model.pth")
         else:
             no_improve +=1
-        if no_improve >= patience:
-            print(f"Early stopping nach {patience} Epochen ohne Verbesserung")
-            break
+            if no_improve>=patience:
+                print(f"[INFO] Early stopping nach {patience} Epochen")
+                break
 
-        # --- Logging: Zeile anhängen ---
-        log_rows.append({"epoch": ep, "train_rmse": train_rmse, "val_rmse": val_rmse})
-
-        # --- Logging: CSV nach jeder Epoche aktualisieren ---
+        log_rows.append({"epoch":ep, "train_rmse":train_rmse, "val_rmse":val_rmse})
         with open(log_csv_path, "w", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=log_fields)
-            writer.writeheader()
-            writer.writerows(log_rows)
+            writer=csv.DictWriter(f, fieldnames=["epoch","train_rmse","val_rmse"])
+            writer.writeheader(); writer.writerows(log_rows)
 
-    # Ende von train_online: return metrics für Optuna
     return train_rmse, val_rmse
 
-# Test: Seq-to-Seq-Inferenz mit einem Forward-Pass
-def test_seq2seq(log_csv_path="training_log.csv"):
+def test_seq2seq(log_csv_path="training_log.csv", out_dir="trial"):
+    Path(out_dir).mkdir(parents=True, exist_ok=True)
     _, _, df_test, _, val_cell = load_data()
-    print("Test auf Zelle:", val_cell)
-    
+    print(f"[TEST] Zelle {val_cell}")
     model = build_model()
-    model.load_state_dict(torch.load("best_seq2seq_soc.pth", map_location=device))    
+    model.load_state_dict(torch.load(Path(out_dir)/"best_model.pth", map_location=device))
     model.eval()
 
-    # Ein-Chunk-Test
-    test_mse, test_preds, test_gts = evaluate_onechunk_seq2seq(model, df_test, device)
-    test_rmse = math.sqrt(test_mse)
-    test_mae  = np.mean(np.abs(test_preds - test_gts))
-    print(f"Finaler Test MAE: {test_mae:.4f}, RMSE: {test_rmse:.4f}")
-    plt.figure(figsize=(10,4))
-    plt.plot(df_test['timestamp'], test_gts,   'k-', label="GT")
-    plt.plot(df_test['timestamp'], test_preds, 'r-', label="Pred")
-    plt.title(f"Finaler Test — MAE: {test_mae:.4f}, RMSE: {test_rmse:.4f}")
-    plt.legend(); plt.tight_layout()
-    plt.savefig("test_onechunk.png"); plt.close()
+    mse, preds, gts = evaluate_onechunk_seq2seq(model, df_test, device)
+    rmse = math.sqrt(mse); mae=np.mean(np.abs(preds-gts))
+    print(f"[TEST] RMSE={rmse:.4f}, MAE={mae:.4f}")
 
-    # --- Logging: Testresultate an CSV anhängen ---
+    # Test-Plot mit MAE-Annotation
+    plt.figure(figsize=(10,4))
+    plt.plot(df_test['timestamp'], gts, 'k-', label="GT")
+    plt.plot(df_test['timestamp'], preds, 'r-', label="Pred")
+    plt.title(f"Final Test — MAE: {mae:.4f}, RMSE: {rmse:.4f}")
+    plt.legend(loc="best")
+    plt.annotate(f"MAE: {mae:.4f}\nRMSE: {rmse:.4f}", xy=(0.01,0.95), xycoords='axes fraction', va='top')
+    plt.tight_layout()
+    plt.savefig(Path(out_dir)/"test_plot.png"); plt.close()
+
+    # Test-Log anhängen
     try:
-        with open(log_csv_path, "a", newline="") as f:
-            writer = csv.writer(f)
-            writer.writerow([])
-            writer.writerow(["test_mae", "test_rmse"])
-            writer.writerow([test_mae, test_rmse])
+        with open(Path(out_dir)/log_csv_path, "a", newline="") as f:
+            writer=csv.writer(f)
+            writer.writerow([]); writer.writerow(["test_mae","test_rmse"]); writer.writerow([mae, rmse])
     except Exception as e:
-        print(f"Fehler beim Schreiben der Testresultate in die CSV: {e}")
+        print(f"[WARN] Konnte Test-Log nicht schreiben: {e}")
 
-    # Plots
-    plt.figure(figsize=(10,4))
-    plt.plot(timestamps, gts, 'k-', label="GT")
-    plt.plot(timestamps, preds, 'r-', label="Pred")
-    plt.title("Seq2Seq Final Test")
-    plt.legend()
-    plt.annotate(f"MAE: {test_mae:.4f}\nRMSE: {test_rmse:.4f}", xy=(0.01,0.95), xycoords='axes fraction', va='top')
-    plt.tight_layout(); plt.savefig("final_seq2seq_plot.png"); plt.close()
+    return mae, rmse
 
-    zoom_n = min(50000, len(preds))
-    for name_seg, seg in [("Start", slice(0, zoom_n)), ("End", slice(-zoom_n, None))]:
-        plt.figure(figsize=(10,4))
-        plt.plot(timestamps[seg], gts[seg], 'k-', label="GT")
-        plt.plot(timestamps[seg], preds[seg], 'r-', label="Pred")
-        plt.legend()
-        plt.title(f"Zoom {name_seg}")
-        plt.tight_layout()
-        plt.savefig(f"zoom_{name_seg.lower()}_seq2seq_plot.png")
-        plt.close()
-
-# Optuna-Studie mit Objective
 def objective(trial):
-    # Sample Hyperparameter
-    hs  = trial.suggest_int("hidden_size", 32, 256)
-    dr  = trial.suggest_float("dropout", 0.0, 0.5)
-    lr  = trial.suggest_loguniform("lr", 1e-5, 1e-3)
-    # Train & Val
+    hs = trial.suggest_int("hidden_size",32,256)
+    dr = trial.suggest_float("dropout",0.0,0.5)
+    lr = trial.suggest_loguniform("lr",1e-5,1e-3)
+    out_dir = f"trial_{trial.number}"
     train_rmse, val_rmse = train_online(
         epochs=30, lr=lr, online_train=False,
         hidden_size=hs, dropout=dr,
-        patience=5, log_csv_path=f"optuna_{hs}_{dr}_{lr:.0e}.csv"
+        patience=5, log_csv_path="log.csv",
+        out_dir=out_dir
     )
+    test_mae, test_rmse = test_seq2seq(log_csv_path="log.csv", out_dir=out_dir)
+    print(f"[TRIAL {trial.number}] val_rmse={val_rmse:.4f}, test_mae={test_mae:.4f}, test_rmse={test_rmse:.4f}")
     return val_rmse
 
 def tune_optuna(n_trials: int = 20):
