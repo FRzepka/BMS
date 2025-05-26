@@ -1,0 +1,123 @@
+Error while loading conda entry point: conda-libmamba-solver (libarchive.so.20: cannot open shared object file: No such file or directory)
+Error while loading conda entry point: conda-libmamba-solver (libarchive.so.20: cannot open shared object file: No such file or directory)
+Using device: cpu
+[INFO] Skaler über alle Zellen fitten
+[DEBUG] MGFarm_18650_C01 NaNs after train scaling: none
+[DEBUG] MGFarm_18650_C03 NaNs after train scaling: none
+[DEBUG] MGFarm_18650_C05 NaNs after train scaling: none
+[DEBUG] MGFarm_18650_C09 NaNs after train scaling: none
+[DEBUG] MGFarm_18650_C11 NaNs after train scaling: none
+[DEBUG] MGFarm_18650_C13 NaNs after train scaling: none
+[DEBUG] MGFarm_18650_C19 NaNs after train scaling: none
+[DEBUG] MGFarm_18650_C21 NaNs after train scaling: none
+[DEBUG] MGFarm_18650_C23 NaNs after train scaling: none
+[DEBUG] MGFarm_18650_C25 NaNs after train scaling: none
+[DEBUG] MGFarm_18650_C27 NaNs after train scaling: none
+[DEBUG] MGFarm_18650_C17 NaNs after train scaling: none
+[DEBUG] MGFarm_18650_C07 NaNs after train scaling: none
+[DEBUG] MGFarm_18650_C15 NaNs after train scaling: none
+[INFO] Global data loaded.
+[INFO] Train cells=['MGFarm_18650_C01', 'MGFarm_18650_C03', 'MGFarm_18650_C05', 'MGFarm_18650_C09', 'MGFarm_18650_C11', 'MGFarm_18650_C13', 'MGFarm_18650_C19', 'MGFarm_18650_C21', 'MGFarm_18650_C23', 'MGFarm_18650_C25', 'MGFarm_18650_C27', 'MGFarm_18650_C17', 'MGFarm_18650_C07', 'MGFarm_18650_C15'], Val/Test cells=['MGFarm_18650_C01', 'MGFarm_18650_C03', 'MGFarm_18650_C05']
+
+--- Epoch 1/500 ---
+[Epoch 1] Training Cell MGFarm_18650_C01
+[Epoch 1] Training Cell MGFarm_18650_C03
+[Epoch 1] Training Cell MGFarm_18650_C05
+[Epoch 1] Training Cell MGFarm_18650_C09
+[Epoch 1] Training Cell MGFarm_18650_C11
+[Epoch 1] Training Cell MGFarm_18650_C13
+[Epoch 1] Training Cell MGFarm_18650_C19
+[Epoch 1] Training Cell MGFarm_18650_C21
+[Epoch 1] Training Cell MGFarm_18650_C23
+[Epoch 1] Training Cell MGFarm_18650_C25
+[Epoch 1] Training Cell MGFarm_18650_C27
+[Epoch 1] Training Cell MGFarm_18650_C17
+[Epoch 1] Training Cell MGFarm_18650_C07
+[Epoch 1] Training Cell MGFarm_18650_C15
+[Epoch 1] train RMSE=0.2467
+[Epoch 1] val RMSE MGFarm_18650_C01=0.2639
+[Epoch 1] val RMSE MGFarm_18650_C03=0.2312
+[Epoch 1] val RMSE MGFarm_18650_C05=0.2466
+[Epoch 1] mean Val RMSE=0.2472
+[Epoch 1] Model gespeichert.
+
+--- Epoch 2/500 ---
+[Epoch 2] Training Cell MGFarm_18650_C01
+[Epoch 2] Training Cell MGFarm_18650_C03
+[Epoch 2] Training Cell MGFarm_18650_C05
+[Epoch 2] Training Cell MGFarm_18650_C09
+[Epoch 2] Training Cell MGFarm_18650_C11
+[Epoch 2] Training Cell MGFarm_18650_C13
+[Epoch 2] Training Cell MGFarm_18650_C19
+[Epoch 2] Training Cell MGFarm_18650_C21
+[Epoch 2] Training Cell MGFarm_18650_C23
+[Epoch 2] Training Cell MGFarm_18650_C25
+[Epoch 2] Training Cell MGFarm_18650_C27
+[Epoch 2] Training Cell MGFarm_18650_C17
+[Epoch 2] Training Cell MGFarm_18650_C07
+[Epoch 2] Training Cell MGFarm_18650_C15
+[Epoch 2] train RMSE=0.2179
+[Epoch 2] val RMSE MGFarm_18650_C01=0.2414
+[Epoch 2] val RMSE MGFarm_18650_C03=0.2004
+[Epoch 2] val RMSE MGFarm_18650_C05=0.2008
+[Epoch 2] mean Val RMSE=0.2142
+[Epoch 2] Model gespeichert.
+
+--- Epoch 3/500 ---
+[Epoch 3] Training Cell MGFarm_18650_C01
+[Epoch 3] Training Cell MGFarm_18650_C03
+[Epoch 3] Training Cell MGFarm_18650_C05
+[Epoch 3] Training Cell MGFarm_18650_C09
+[Epoch 3] Training Cell MGFarm_18650_C11
+[Epoch 3] Training Cell MGFarm_18650_C13
+[Epoch 3] Training Cell MGFarm_18650_C19
+[Epoch 3] Training Cell MGFarm_18650_C21
+[Epoch 3] Training Cell MGFarm_18650_C23
+[Epoch 3] Training Cell MGFarm_18650_C25
+[Epoch 3] Training Cell MGFarm_18650_C27
+[Epoch 3] Training Cell MGFarm_18650_C17
+[Epoch 3] Training Cell MGFarm_18650_C07
+[Epoch 3] Training Cell MGFarm_18650_C15
+[Epoch 3] train RMSE=0.1857
+[Epoch 3] val RMSE MGFarm_18650_C01=0.2133
+[Epoch 3] val RMSE MGFarm_18650_C03=0.1692
+[Epoch 3] val RMSE MGFarm_18650_C05=0.1522
+[Epoch 3] mean Val RMSE=0.1782
+[Epoch 3] Model gespeichert.
+
+--- Epoch 4/500 ---
+[Epoch 4] Training Cell MGFarm_18650_C01
+[Epoch 4] Training Cell MGFarm_18650_C03
+[Epoch 4] Training Cell MGFarm_18650_C05
+[Epoch 4] Training Cell MGFarm_18650_C09
+[Epoch 4] Training Cell MGFarm_18650_C11
+[Epoch 4] Training Cell MGFarm_18650_C13
+[Epoch 4] Training Cell MGFarm_18650_C19
+[Epoch 4] Training Cell MGFarm_18650_C21
+[Epoch 4] Training Cell MGFarm_18650_C23
+[Epoch 4] Training Cell MGFarm_18650_C25
+[Epoch 4] Training Cell MGFarm_18650_C27
+[Epoch 4] Training Cell MGFarm_18650_C17
+[Epoch 4] Training Cell MGFarm_18650_C07
+[Epoch 4] Training Cell MGFarm_18650_C15
+[Epoch 4] train RMSE=0.1623
+[Epoch 4] val RMSE MGFarm_18650_C01=0.2057
+[Epoch 4] val RMSE MGFarm_18650_C03=0.1589
+[Epoch 4] val RMSE MGFarm_18650_C05=0.1443
+[Epoch 4] mean Val RMSE=0.1696
+[Epoch 4] Model gespeichert.
+
+--- Epoch 5/500 ---
+[Epoch 5] Training Cell MGFarm_18650_C01
+[Epoch 5] Training Cell MGFarm_18650_C03
+[Epoch 5] Training Cell MGFarm_18650_C05
+[Epoch 5] Training Cell MGFarm_18650_C09
+[Epoch 5] Training Cell MGFarm_18650_C11
+[Epoch 5] Training Cell MGFarm_18650_C13
+[Epoch 5] Training Cell MGFarm_18650_C19
+[Epoch 5] Training Cell MGFarm_18650_C21
+[Epoch 5] Training Cell MGFarm_18650_C23
+[Epoch 5] Training Cell MGFarm_18650_C25
+[Epoch 5] Training Cell MGFarm_18650_C27
+[Epoch 5] Training Cell MGFarm_18650_C17
+[Epoch 5] Training Cell MGFarm_18650_C07
